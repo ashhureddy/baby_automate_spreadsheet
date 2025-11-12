@@ -1,3 +1,4 @@
+
 """
 Streamlit app for Advanced Cellular Template Processing
 
@@ -125,6 +126,24 @@ def get_sector_from_col(col_index: int) -> str:
         return "voicetest"
     return "unknown"
 
+#---------------- new additon ----------------------
+
+def clean_json_response(content: str) -> str:
+    """Remove markdown code blocks from JSON responses."""
+    if not content:
+        return content
+    
+    content = content.strip()
+    
+    # Remove markdown code block wrappers
+    if content.startswith("```"):
+        # Remove opening ```json or ```
+        content = re.sub(r'^```(?:json)?\s*\n?', '', content)
+        # Remove closing ```
+        content = re.sub(r'\n?```\s*$', '', content)
+    
+    return content.strip()
+
 
 # ---------------- Image extraction (only .xlsx now) ----------------
 def extract_images_from_excel(xlsx_path: str, output_folder: str, log_placeholder, logs: list) -> List[str]:
@@ -221,6 +240,7 @@ def process_service_images(token: str, image1_path: str, image2_path: str, model
         resp = _post_chat_completion(token, payload, timeout=120)
         resp.raise_for_status()
         content = resp.json()["choices"][0]["message"]["content"]
+        content = clean_json_response(content)
         result = json.loads(content)
         log_append(log_placeholder, logs, f"[SUCCESS] AI processed service data for '{sector}'.")
         return result
@@ -269,6 +289,7 @@ def analyze_generic_image(token: str, image_path: str, model_name: str, log_plac
         resp = _post_chat_completion(token, payload, timeout=60)
         resp.raise_for_status()
         content = resp.json()["choices"][0]["message"]["content"]
+        content = clean_json_response(content)
         result = json.loads(content)
         log_append(log_placeholder, logs, f"[SUCCESS] AI processed '{image_name}' as '{result.get('image_type', 'unknown')}'.")
         return result
@@ -316,6 +337,7 @@ def analyze_voice_image(token: str, image_path: str, model_name: str, log_placeh
         resp = _post_chat_completion(token, payload, timeout=60)
         resp.raise_for_status()
         content = resp.json()["choices"][0]["message"]["content"]
+        content = clean_json_response(content)
         res = json.loads(content)
         log_append(log_placeholder, logs, f"[VOICE SUCCESS] Processed '{image_name}'.")
         return res
@@ -328,6 +350,11 @@ def analyze_voice_image(token: str, image_path: str, model_name: str, log_placeh
         log_append(log_placeholder, logs, "[VOICE] Cooldown: waiting 2 seconds")
         time.sleep(2)
 
+
+
+def evaluate_voice_image(token: str, image_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
+    """Careful evaluation of voice image - same as analyze_voice_image but for retry logic."""
+    return analyze_voice_image(token, image_path, model_name, log_placeholder, logs)
 
 # ---------------- Careful evaluation functions ----------------
 def evaluate_service_images(token: str, image1_path: str, image2_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
@@ -367,6 +394,7 @@ def evaluate_service_images(token: str, image1_path: str, image2_path: str, mode
         resp = _post_chat_completion(token, payload, timeout=120)
         resp.raise_for_status()
         content = resp.json()["choices"][0]["message"]["content"]
+        content = clean_json_response(content)
         return json.loads(content)
     except Exception as e:
         log_append(log_placeholder, logs, f"[EVAL ERROR] Service evaluation failed: {e}")
@@ -412,6 +440,7 @@ def evaluate_generic_image(token: str, image_path: str, model_name: str, log_pla
         resp = _post_chat_completion(token, payload, timeout=90)
         resp.raise_for_status()
         content = resp.json()["choices"][0]["message"]["content"]
+        content = clean_json_response(content)
         return json.loads(content)
     except Exception as e:
         log_append(log_placeholder, logs, f"[EVAL ERROR] Generic evaluation failed for '{image_name}': {e}")
@@ -535,6 +564,7 @@ def ask_model_for_expression_value(token: str, var_name: str, var_obj, expressio
         resp = _post_chat_completion(token, payload, timeout=30)
         resp.raise_for_status()
         content = resp.json()["choices"][0]["message"]["content"]
+        content = clean_json_response(content)
         parsed = json.loads(content)
         return parsed.get("value", None)
     except Exception as e:
