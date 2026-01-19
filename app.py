@@ -1,4 +1,3 @@
-
 """
 Streamlit app for Advanced Cellular Template Processing
 
@@ -23,9 +22,9 @@ import openpyxl
 from PIL import Image
 
 # ---------------- Configuration ----------------
-API_BASE = "https://openrouter.apify.actor/api/v1"
-MODEL_SERVICE_DEFAULT = "google/gemini-2.5-pro"
-MODEL_GENERIC_DEFAULT = "google/gemini-2.5-flash"
+API_BASE = "https://integrate.api.nvidia.com/v1"
+MODEL_SERVICE_DEFAULT = "nvidia/nemotron-nano-12b-v2-vl"
+MODEL_GENERIC_DEFAULT = "nvidia/nemotron-nano-12b-v2-vl"
 
 # ---------------- Schemas ----------------
 SERVICE_SCHEMA = {
@@ -92,12 +91,12 @@ extract_text = []
 avearge = {}
 
 # ---------------- Helpers ----------------
-def _apify_headers(token: str) -> dict:
+def _api_headers(token: str) -> dict:
+    """Generate headers for NVIDIA API."""
     return {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "http://localhost",
-        "X-Title": "Advanced Cellular Template Processor",
+        "Accept": "application/json"
     }
 
 
@@ -126,20 +125,27 @@ def get_sector_from_col(col_index: int) -> str:
         return "voicetest"
     return "unknown"
 
-#---------------- new additon ----------------------
+#---------------- UPDATED CLEANER (Safety Net) ----------------------
 
 def clean_json_response(content: str) -> str:
-    """Remove markdown code blocks from JSON responses."""
+    """
+    Robust cleaning: finds the first '{' and the last '}' to extract valid JSON,
+    discarding any chatty intro/outro text.
+    """
     if not content:
         return content
     
     content = content.strip()
+
+    # 1. Try to find the outermost JSON object using Regex
+    # This looks for the first '{' and the last '}' across line breaks
+    match = re.search(r'(\{.*\})', content, re.DOTALL)
+    if match:
+        content = match.group(1)
     
-    # Remove markdown code block wrappers
+    # 2. Cleanup markdown wrappers if they still exist inside the extraction
     if content.startswith("```"):
-        # Remove opening ```json or ```
         content = re.sub(r'^```(?:json)?\s*\n?', '', content)
-        # Remove closing ```
         content = re.sub(r'\n?```\s*$', '', content)
     
     return content.strip()
@@ -198,7 +204,7 @@ def extract_images_from_excel(xlsx_path: str, output_folder: str, log_placeholde
 
 # ---------------- API helpers & analyzers ----------------
 def _post_chat_completion(token: str, payload: dict, timeout: int = 60):
-    headers = _apify_headers(token)
+    headers = _api_headers(token)
     return requests.post(url=f"{API_BASE}/chat/completions", headers=headers, data=json.dumps(payload), timeout=timeout)
 
 
@@ -214,10 +220,12 @@ def process_service_images(token: str, image1_path: str, image2_path: str, model
         log_append(log_placeholder, logs, f"[ERROR] Could not read/encode service images: {e}")
         return None
 
+    # UPDATED PROMPT: STRICT FORMATTING
     prompt = (
-        "You are a hyper-specialized AI for cellular network engineering data analysis. "
-        "Analyze both provided service-mode screenshots carefully and return exactly one JSON object "
-        "matching the schema. Use null where value is not found.\n\n"
+        "You are a hyper-specialized AI for cellular network engineering. "
+        "Analyze both service-mode screenshots. Return EXACTLY one JSON object matching the schema. "
+        "STRICTLY return ONLY the JSON object. Do not add any conversational text, explanations, or markdown blocks. "
+        "Start your response with '{' and end with '}'.\n\n"
         f"SCHEMA:\n{json.dumps(SERVICE_SCHEMA, indent=2)}"
     )
 
@@ -233,7 +241,6 @@ def process_service_images(token: str, image1_path: str, image2_path: str, model
                 ],
             }
         ],
-        "response_format": {"type": "json_object"},
     }
 
     try:
@@ -254,108 +261,186 @@ def process_service_images(token: str, image1_path: str, image2_path: str, model
         time.sleep(2)
 
 
-def analyze_generic_image(token: str, image_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
+# ---------------- SPECIALIZED ANALYZERS (SEPARATED) ----------------
+
+# ---------------- SPECIALIZED ANALYZERS (SEPARATED) ----------------
+
+# ---------------- SPECIALIZED ANALYZERS (With Telecom Domain Logic) ----------------
+
+# ---------------- SPECIALIZED ANALYZERS (With Telecom Domain Logic) ----------------
+
+def analyze_speed_test(token: str, image_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
+    """
+    Strictly looks for Speed Test data.
+    Includes TELECOM EXPERT RULES to prevent hallucinations (e.g. reading 2160p as speed).
+    """
     image_name = Path(image_path).name
-    log_append(log_placeholder, logs, f"[LOG] Starting generic extraction for '{image_name}' using {model_name}")
     try:
         with open(image_path, "rb") as f:
             b = base64.b64encode(f.read()).decode("utf-8")
     except Exception as e:
-        log_append(log_placeholder, logs, f"[ERROR] Could not read/encode image '{image_name}': {e}")
         return None
 
+    # SMART PROMPT WITH DOMAIN KNOWLEDGE
     prompt = (
-        "You are an expert AI assistant for analyzing cellular network test data. "
-        "Classify the image as 'speed_test', 'video_test', or 'voice_call' and return a single JSON object "
-        "matching the corresponding schema. Use null for missing fields.\n\n"
-        f"SCHEMAS:\n{json.dumps(GENERIC_SCHEMAS, indent=2)}"
+        "You are a Senior RF Engineer validating 5G drive test data. Extract SPEED TEST metrics.\n\n"
+        "DOMAIN RULES (SANITY CHECKS):\n"
+        "1. **Resolution Trap**: If you see '2160', '1080', or '720', these are VIDEO RESOLUTIONS. Do NOT report them as Download/Upload speed.\n"
+        "2. **Latency vs Speed**: If the screen shows ONLY 'Ping' and 'Jitter' (Latency Test), return 'null' for Download/Upload.\n"
+        "3. **Decimal Danger**: Ping is usually an integer (e.g., 28, 44). If you see '2.8', look closer—it might be '28'. Do not hallucinate decimals for Ping unless clearly visible.\n"
+        "4. **Visual Hierarchy**: Download speed is usually the LARGEST number on screen. If a number is small or in the corner, it's likely metadata, not speed.\n\n"
+        "REQUIRED OUTPUT:\n"
+        "Return valid JSON matching this schema exactly. Use null (no quotes) for missing values.\n"
+        f"SCHEMA:\n{json.dumps(GENERIC_SCHEMAS['speed_test'], indent=2)}"
     )
 
     payload = {
         "model": model_name,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b}"}},
-                ],
-            }
-        ],
-        "response_format": {"type": "json_object"},
+        "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b}"}}]}]
     }
 
     try:
-        resp = _post_chat_completion(token, payload, timeout=60)
+        resp = _post_chat_completion(token, payload, timeout=50)
         resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"]["content"]
-        content = clean_json_response(content)
-        result = json.loads(content)
-        log_append(log_placeholder, logs, f"[SUCCESS] AI processed '{image_name}' as '{result.get('image_type', 'unknown')}'.")
-        return result
-    except Exception as e:
-        log_append(log_placeholder, logs, f"[ERROR] API call failed for '{image_name}': {e}")
-        if "resp" in locals():
-            log_append(log_placeholder, logs, f"  Response: {getattr(resp, 'text', '')}")
+        content = clean_json_response(resp.json()["choices"][0]["message"]["content"])
+        res = json.loads(content)
+        
+        # LOGIC CHECK 1: If the model returns 2160/1080 as speed, it failed the Domain Rule. Reject it.
+        dl = res.get("data", {}).get("download_mbps")
+        if dl in [2160, 1080, 720, 2160.0, 1080.0]:
+            log_append(log_placeholder, logs, f"[SMART CHECK] Rejected {dl} Mbps as likely Video Resolution.")
+            return None 
+            
+        # LOGIC CHECK 2: Must have at least download/upload OR valid ping to be useful
+        data = res.get("data", {})
+        if data.get("download_mbps") is None and data.get("upload_mbps") is None and data.get("ping_ms") is None:
+            return None
+            
+        return res
+    except Exception:
         return None
-    finally:
-        log_append(log_placeholder, logs, "[LOG] Cooldown: waiting 2 seconds")
-        time.sleep(2)
 
 
-def analyze_voice_image(token: str, image_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
-    image_name = Path(image_path).name
-    log_append(log_placeholder, logs, f"[VOICE] Starting voice extraction for '{image_name}'")
+def analyze_video_test(token: str, image_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
+    """Strictly looks for Video Test data. Prioritizes specific numbers over generic labels."""
     try:
         with open(image_path, "rb") as f:
             b = base64.b64encode(f.read()).decode("utf-8")
     except Exception as e:
-        log_append(log_placeholder, logs, f"[VOICE ERROR] Could not read/encode: {e}")
         return None
 
     prompt = (
-        "You are an expert in telecom voice-call screenshot extraction. Extract ONLY the fields in the voice_call schema "
-        "and emphasize 'time' (return exactly as seen). Return one JSON object.\n\n"
+        "You are a Senior RF Engineer validating video streaming tests. Extract VIDEO metrics.\n\n"
+        "DOMAIN RULES:\n"
+        "1. **Target**: Look strictly for 'Max Resolution', 'Resolution', 'Load Time', or 'Buffering'.\n"
+        "2. **Precision Rule (CRITICAL)**: \n"
+        "   - Prefer specific NUMERICAL resolutions (e.g., '2160p', '1080p') over generic labels (e.g., '4K', 'HD').\n"
+        "   - If the screen says '2160p' AND '4K', extract '2160p'.\n"
+        "   - Only output '4K' if no numerical resolution (like 2160p) is visible.\n"
+        "3. **Load Time**: Extract the exact number in milliseconds (ms). If units are seconds (s), convert (1.2s = 1200).\n"
+        "4. **Ignore Speed**: Do not extract Mbps figures here.\n\n"
+        "REQUIRED OUTPUT:\n"
+        "Return valid JSON matching this schema exactly.\n"
+        f"SCHEMA:\n{json.dumps(GENERIC_SCHEMAS['video_test'], indent=2)}"
+    )
+
+    payload = {
+        "model": model_name,
+        "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b}"}}]}]
+    }
+
+    try:
+        resp = _post_chat_completion(token, payload, timeout=50)
+        resp.raise_for_status()
+        content = clean_json_response(resp.json()["choices"][0]["message"]["content"])
+        res = json.loads(content)
+        
+        if res.get("data", {}).get("max_resolution") is not None or res.get("data", {}).get("load_time_ms") is not None:
+            return res
+        return None
+    except Exception:
+        return None
+
+
+def analyze_voice_test_strict(token: str, image_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
+    """Strictly looks for Voice Call data."""
+    try:
+        with open(image_path, "rb") as f:
+            b = base64.b64encode(f.read()).decode("utf-8")
+    except Exception as e:
+        return None
+
+    prompt = (
+        "You are a Telecom Engineer analyzing Voice Call tests. Extract CALL metrics.\n\n"
+        "RULES:\n"
+        "1. **Visuals**: Look for a dialer screen, 'Incoming Call', 'Dialing'.\n"
+        "2. **Duration (CRITICAL)**: Read the call timer EXACTLY as shown (e.g., '00:10', '0:12').\n"
+        "   - Convert the timer value to total seconds (e.g., '00:10' -> 10).\n"
+        "   - Do NOT assume the duration is 0 unless the timer literally reads '00:00'.\n"
+        "3. **Ignore**: Speed/Video data.\n\n"
+        "REQUIRED OUTPUT:\n"
+        "Return valid JSON matching this schema exactly.\n"
         f"SCHEMA:\n{json.dumps(GENERIC_SCHEMAS['voice_call'], indent=2)}"
     )
 
     payload = {
         "model": model_name,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b}"}},
-                ],
-            }
-        ],
-        "response_format": {"type": "json_object"},
+        "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b}"}}]}]
     }
 
     try:
-        resp = _post_chat_completion(token, payload, timeout=60)
+        resp = _post_chat_completion(token, payload, timeout=50)
         resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"]["content"]
-        content = clean_json_response(content)
-        res = json.loads(content)
-        log_append(log_placeholder, logs, f"[VOICE SUCCESS] Processed '{image_name}'.")
-        return res
-    except Exception as e:
-        log_append(log_placeholder, logs, f"[VOICE ERROR] API call failed for '{image_name}': {e}")
-        if "resp" in locals():
-            log_append(log_placeholder, logs, f"  Response: {getattr(resp, 'text', '')}")
+        content = clean_json_response(resp.json()["choices"][0]["message"]["content"])
+        return json.loads(content)
+    except Exception:
         return None
-    finally:
-        log_append(log_placeholder, logs, "[VOICE] Cooldown: waiting 2 seconds")
-        time.sleep(2)
 
+def dispatch_image_analysis(token: str, image_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
+    """
+    Smart Router: Tries tests in a specific order based on filename index.
+    """
+    path_obj = Path(image_path)
+    image_name = path_obj.stem
+    
+    # Extract index from filename (e.g. alpha_image_3 -> 3)
+    try:
+        idx = int(image_name.split("_")[-1])
+    except:
+        idx = 0
 
+    log_append(log_placeholder, logs, f"[LOG] Dispatching '{image_name}'...")
+
+    # HEURISTIC: Images 3-7 are usually Speed. Images 8+ are usually Video.
+    if 3 <= idx <= 7:
+        priority = ["speed", "video", "voice"]
+    elif idx >= 8:
+        priority = ["video", "speed", "voice"]
+    else:
+        priority = ["speed", "video", "voice"]
+
+    for test_type in priority:
+        res = None
+        if test_type == "speed":
+            res = analyze_speed_test(token, image_path, model_name, log_placeholder, logs)
+        elif test_type == "video":
+            res = analyze_video_test(token, image_path, model_name, log_placeholder, logs)
+        elif test_type == "voice":
+            res = analyze_voice_test_strict(token, image_path, model_name, log_placeholder, logs)
+        
+        if res:
+            log_append(log_placeholder, logs, f"[SUCCESS] '{image_name}' identified as {test_type.upper()}.")
+            return res
+
+    log_append(log_placeholder, logs, f"[WARN] Could not identify '{image_name}' (tried {priority}).")
+    return None
+
+# Wrappers to maintain compatibility if called elsewhere
+def evaluate_generic_image(token: str, image_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
+    return dispatch_image_analysis(token, image_path, model_name, log_placeholder, logs)
 
 def evaluate_voice_image(token: str, image_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
-    """Careful evaluation of voice image - same as analyze_voice_image but for retry logic."""
-    return analyze_voice_image(token, image_path, model_name, log_placeholder, logs)
-
+    return analyze_voice_test_strict(token, image_path, model_name, log_placeholder, logs)
 # ---------------- Careful evaluation functions ----------------
 def evaluate_service_images(token: str, image1_path: str, image2_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
     sector = Path(image1_path).stem.split("_")[0] if image1_path else "unknown"
@@ -369,9 +454,12 @@ def evaluate_service_images(token: str, image1_path: str, image2_path: str, mode
         log_append(log_placeholder, logs, f"[EVAL ERROR] Could not read/encode images: {e}")
         return None
 
+    # UPDATED PROMPT: STRICT FORMATTING
     prompt = (
-        "CAREFUL EVALUATION: Examine both images line-by-line and extract values matching the schema. "
-        "Return a single JSON object. Use null only if field truly not present.\n\n"
+        "CAREFUL EVALUATION: Examine both images. Return a single JSON object. "
+        "Use null only if field truly not present. "
+        "STRICTLY return ONLY the JSON object. Do not add conversational text. "
+        "Start your response with '{' and end with '}'.\n\n"
         f"SCHEMA:\n{json.dumps(SERVICE_SCHEMA, indent=2)}"
     )
 
@@ -387,7 +475,6 @@ def evaluate_service_images(token: str, image1_path: str, image2_path: str, mode
                 ],
             }
         ],
-        "response_format": {"type": "json_object"},
     }
 
     try:
@@ -398,52 +485,6 @@ def evaluate_service_images(token: str, image1_path: str, image2_path: str, mode
         return json.loads(content)
     except Exception as e:
         log_append(log_placeholder, logs, f"[EVAL ERROR] Service evaluation failed: {e}")
-        if "resp" in locals():
-            log_append(log_placeholder, logs, f"  Response: {getattr(resp, 'text', '')}")
-        return None
-    finally:
-        log_append(log_placeholder, logs, "[EVAL] Cooldown: waiting 2 seconds")
-        time.sleep(2)
-
-
-def evaluate_generic_image(token: str, image_path: str, model_name: str, log_placeholder, logs: list) -> Optional[dict]:
-    image_name = Path(image_path).name
-    log_append(log_placeholder, logs, f"[EVAL] Re-evaluating '{image_name}' (careful)")
-    try:
-        with open(image_path, "rb") as f:
-            b = base64.b64encode(f.read()).decode("utf-8")
-    except Exception as e:
-        log_append(log_placeholder, logs, f"[EVAL ERROR] Could not read/encode '{image_name}': {e}")
-        return None
-
-    prompt = (
-        "CAREFUL EVALUATION: Analyze the image slowly and return a single JSON object matching one of the schemas. "
-        "Use null only when necessary.\n\n"
-        f"SCHEMAS:\n{json.dumps(GENERIC_SCHEMAS, indent=2)}"
-    )
-
-    payload = {
-        "model": model_name,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b}"}},
-                ],
-            }
-        ],
-        "response_format": {"type": "json_object"},
-    }
-
-    try:
-        resp = _post_chat_completion(token, payload, timeout=90)
-        resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"]["content"]
-        content = clean_json_response(content)
-        return json.loads(content)
-    except Exception as e:
-        log_append(log_placeholder, logs, f"[EVAL ERROR] Generic evaluation failed for '{image_name}': {e}")
         if "resp" in locals():
             log_append(log_placeholder, logs, f"  Response: {getattr(resp, 'text', '')}")
         return None
@@ -547,17 +588,19 @@ def ask_model_for_expression_value(token: str, var_name: str, var_obj, expressio
     except Exception:
         var_json = json.dumps(str(var_obj))
 
+    # UPDATED PROMPT: STRICT FORMATTING
     prompt = (
         f"You are an exact assistant. You are given a JSON variable named '{var_name}':\n\n"
         f"{var_json}\n\nGiven the expression:\n{expression}\n\n"
         "Using ONLY the provided JSON variable, return exactly one JSON object:\n{ \"value\": <value> }\n"
-        "Where <value> is the exact value or null. Return ONLY the JSON object and nothing else."
+        "Where <value> is the exact value or null. "
+        "STRICTLY return ONLY the JSON object. Do not add conversational text. "
+        "Start your response with '{' and end with '}'."
     )
 
     payload = {
         "model": model_name,
         "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
-        "response_format": {"type": "json_object"},
     }
 
     try:
@@ -572,8 +615,6 @@ def ask_model_for_expression_value(token: str, var_name: str, var_obj, expressio
         if "resp" in locals():
             log_append(log_placeholder, logs, f"  Response: {getattr(resp, 'text', '')}")
         return None
-
-
 # ---------------- Main processing function for Streamlit ----------------
 def process_file_streamlit(user_file_path: str,
                            token: str,
@@ -583,8 +624,7 @@ def process_file_streamlit(user_file_path: str,
                            model_service: str = MODEL_SERVICE_DEFAULT,
                            model_generic: str = MODEL_GENERIC_DEFAULT) -> Optional[str]:
     """
-    Main worker. IMPORTANT: user_file_path is expected to be a local filesystem path (the UI saves the upload).
-    We no longer copy the file; we operate on the saved path directly.
+    Main worker. IMPORTANT: user_file_path is expected to be a local filesystem path.
     """
 
     # reinitialize globals
@@ -609,18 +649,18 @@ def process_file_streamlit(user_file_path: str,
     extract_text = []
     avearge = {}
 
-    # ensure temp dir exists (UI created one, but be safe)
+    # ensure temp dir exists
     os.makedirs(temp_dir, exist_ok=True)
     images_temp = os.path.join(temp_dir, "images")
     os.makedirs(images_temp, exist_ok=True)
 
-    # Use provided path directly (UI saved file to this path)
+    # Use provided path directly
     local_template = user_file_path
     if not os.path.exists(local_template):
         log_append(text_area_placeholder, logs, f"[ERROR] Template not found: {local_template}")
         return None
 
-    # only support .xlsx now
+    # only support .xlsx
     path_obj = Path(local_template)
     if path_obj.suffix.lower() != ".xlsx":
         log_append(text_area_placeholder, logs, "[ERROR] Unsupported file type (only .xlsx supported now).")
@@ -642,10 +682,13 @@ def process_file_streamlit(user_file_path: str,
             images_by_sector["unknown"].append(p)
 
     log_append(text_area_placeholder, logs, "[LOG] Starting main processing loop.")
+    
+    # --- MAIN LOOP (Alpha, Beta, Gamma) ---
     for sector in ["alpha", "beta", "gamma"]:
         log_append(text_area_placeholder, logs, f"--- Processing sector: {sector.upper()} ---")
         sector_images = images_by_sector[sector]
 
+        # 1. Process Service Images
         img1 = next((p for p in sector_images if Path(p).stem.endswith("_image_1")), None)
         img2 = next((p for p in sector_images if Path(p).stem.endswith("_image_2")), None)
 
@@ -661,12 +704,16 @@ def process_file_streamlit(user_file_path: str,
         else:
             log_append(text_area_placeholder, logs, f"[WARN] Missing service images for {sector}")
 
+        # 2. Process Other Images (Speed/Video/Voice) using Dispatcher
         other_images = [
             p for p in sector_images
             if not (Path(p).stem.endswith("_image_1") or Path(p).stem.endswith("_image_2"))
         ]
+        
         for img in other_images:
-            res = analyze_generic_image(token, img, model_generic, text_area_placeholder, logs)
+            # CHANGED: Use Smart Dispatcher
+            res = dispatch_image_analysis(token, img, model_generic, text_area_placeholder, logs)
+            
             if res and "image_type" in res:
                 image_name = Path(img).stem
                 if res["image_type"] == "speed_test":
@@ -686,12 +733,13 @@ def process_file_streamlit(user_file_path: str,
                 elif res["image_type"] == "voice_call":
                     voice_test[image_name] = res.get("data", {})
 
-    # voicetest sector
+    # --- MAIN LOOP (Voicetest Sector) ---
     if images_by_sector["voicetest"]:
         log_append(text_area_placeholder, logs, "--- Processing sector: VOICETEST ---")
         for img in images_by_sector["voicetest"]:
-            res = analyze_voice_image(token, img, model_generic, text_area_placeholder, logs)
-            if res and res.get("image_type") == "voice_call":
+            # CHANGED: Use Strict Voice Analyzer
+            res = analyze_voice_test_strict(token, img, model_generic, text_area_placeholder, logs)
+            if res and "data" in res:
                 voice_test[Path(img).stem] = res.get("data", {})
 
     # ---------------- Evaluation pass & Rule 2 ----------------
@@ -741,9 +789,11 @@ def process_file_streamlit(user_file_path: str,
                         if target.get(k) is None and v is not None:
                             target[k] = v
 
-    # Helper: retry single images (normal then careful)
+    # UPDATED HELPER: Retry single images using Smart Dispatcher
     def _retry_image_and_merge(image_name: str, sector_var_map: dict) -> bool:
         image_path = os.path.join(images_temp, f"{image_name}.png")
+        
+        # 1. Find file if not at exact path
         if not os.path.exists(image_path):
             found = None
             for s_list in images_by_sector.values():
@@ -758,40 +808,31 @@ def process_file_streamlit(user_file_path: str,
             else:
                 log_append(text_area_placeholder, logs, f"[EVAL WARN] Image {image_name} not found. Skipping.")
                 return False
+        
+        # 2. Prevent double retry
         if image_path in retried_images:
             return False
 
         is_voice = image_name.startswith("voicetest")
-        log_append(text_area_placeholder, logs, f"[EVAL] Attempting normal analyze for {image_name}.")
+        log_append(text_area_placeholder, logs, f"[EVAL] Retrying analysis for {image_name}.")
+        
+        res = None
         if is_voice:
-            normal_res = analyze_voice_image(token, image_path, model_generic, text_area_placeholder, logs)
+            res = analyze_voice_test_strict(token, image_path, model_generic, text_area_placeholder, logs)
         else:
-            normal_res = analyze_generic_image(token, image_path, model_generic, text_area_placeholder, logs)
+            # Use smart dispatcher for generic (Alpha/Beta/Gamma) images
+            res = dispatch_image_analysis(token, image_path, model_generic, text_area_placeholder, logs)
 
         retried_images.add(image_path)
-        if normal_res and "image_type" in normal_res:
+        
+        if res and "data" in res:
             sector_var_map.setdefault(image_name, {})
-            data = normal_res.get("data", {})
+            data = res.get("data", {})
             for k, v in data.items():
                 if sector_var_map[image_name].get(k) is None and v is not None:
                     sector_var_map[image_name][k] = v
             return True
-
-        log_append(text_area_placeholder, logs, f"[EVAL] Normal analyze didn't help for {image_name}. Trying careful evaluation.")
-        if is_voice:
-            eval_res = evaluate_voice_image(token, image_path, model_generic, text_area_placeholder, logs)
-        else:
-            eval_res = evaluate_generic_image(token, image_path, model_generic, text_area_placeholder, logs)
-
-        if not eval_res or "image_type" not in eval_res:
-            log_append(text_area_placeholder, logs, f"[EVAL] Careful evaluation returned nothing for {image_name}.")
-            return False
-
-        sector_var_map.setdefault(image_name, {})
-        for k, v in eval_res.get("data", {}).items():
-            if sector_var_map[image_name].get(k) is None and v is not None:
-                sector_var_map[image_name][k] = v
-        return True
+        return False
 
     sector_maps = [
         ("alpha", alpha_speedtest, alpha_video),
@@ -1202,9 +1243,11 @@ def process_file_streamlit(user_file_path: str,
                     log_append(text_area_placeholder, logs, f"[RULE3] Could not remap '{expr}' from voice image.")
                 continue
             else:
-                # generic image (speed/video)
+                # generic image (speed/video) - USE DISPATCHER FOR STRICT EVAL
                 log_append(text_area_placeholder, logs, f"[RULE3] Strictly evaluating generic image '{image_key}'.")
-                gen_eval = evaluate_generic_image(token, file_path, model_generic, text_area_placeholder, logs)
+                # CHANGED: Use the Smart Dispatcher for Rule 3 retry as well
+                gen_eval = dispatch_image_analysis(token, file_path, model_generic, text_area_placeholder, logs)
+                
                 if gen_eval and "data" in gen_eval:
                     pref = image_key.split("_")[0]
                     if pref == "alpha":
@@ -1300,31 +1343,34 @@ def process_file_streamlit(user_file_path: str,
 # ---------------- Streamlit UI ----------------
 def validate_api_key(token: str) -> Tuple[bool, str]:
     # lightweight format check
-    if not token or "apify_api" not in token:
-        return False, "Token does not look like an Apify token (missing 'apify_api')."
+    if not token or "nvapi" not in token: # Simple check for Nvidia key format, but optional
+        # NOTE: Nvidia keys typically start with nvapi- but not strictly required by logic, just a check
+        # We'll allow it if it's not empty for flexibility.
+        if len(token) < 10:
+             return False, "Token looks too short."
     return True, "Token looks valid (format check)."
 
 
 def main_ui():
     st.set_page_config(page_title="Advanced Cellular Template Processor", layout="wide")
     st.title("Advanced Cellular Template Processor")
-    st.write("Provide an API key in the sidebar and validate it. After validation you can upload an .xlsx template.")
+    st.write("Provide an NVIDIA API key in the sidebar and validate it. After validation you can upload an .xlsx template.")
 
     # sidebar: token & simple validation
     st.sidebar.header("API Key & Settings")
-    token_input = st.sidebar.text_input("Apify/OpenRouter API token", type="password", placeholder="apify_api_...")
+    token_input = st.sidebar.text_input("NVIDIA API token", type="password", placeholder="nvapi-...")
     if "logs" not in st.session_state:
         st.session_state["logs"] = []
     if "API_VALID" not in st.session_state:
         st.session_state["API_VALID"] = False
-    if "APIFY_TOKEN" not in st.session_state:
-        st.session_state["APIFY_TOKEN"] = ""
+    if "NVIDIA_TOKEN" not in st.session_state:
+        st.session_state["NVIDIA_TOKEN"] = ""
 
     if st.sidebar.button("Validate API key"):
         ok, msg = validate_api_key(token_input)
         if ok:
             st.session_state["API_VALID"] = True
-            st.session_state["APIFY_TOKEN"] = token_input
+            st.session_state["NVIDIA_TOKEN"] = token_input
             st.sidebar.success("API token stored in session (format validated).")
             st.session_state["logs"].append("[UI] API token stored (format validated).")
         else:
@@ -1359,7 +1405,7 @@ def main_ui():
                 log_append(log_placeholder, st.session_state["logs"], "[UI] Starting processing...")
                 out_path = process_file_streamlit(
                     user_file_path=saved_template_path,
-                    token=st.session_state["APIFY_TOKEN"],
+                    token=st.session_state["NVIDIA_TOKEN"],
                     temp_dir=tmp_dir,
                     logs=st.session_state["logs"],
                     text_area_placeholder=log_placeholder,
