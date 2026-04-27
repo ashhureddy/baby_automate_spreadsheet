@@ -23,8 +23,8 @@ from PIL import Image
 
 # ---------------- Configuration ----------------
 API_BASE = "https://integrate.api.nvidia.com/v1"
-MODEL_SERVICE_DEFAULT = "nvidia/nemotron-nano-12b-v2-vl"
-MODEL_GENERIC_DEFAULT = "nvidia/nemotron-nano-12b-v2-vl"
+MODEL_SERVICE_DEFAULT = "google/gemma-4-31b-it"
+MODEL_GENERIC_DEFAULT = "google/gemma-4-31b-it"
 
 # ---------------- Schemas ----------------
 SERVICE_SCHEMA = {
