@@ -1,5 +1,5 @@
 """
-Streamlit app for Advanced Cellular Template Processing - GEMINI 2.0 FLASH EDITION
+Streamlit app for Advanced Cellular Template Processing - GEMINI 3.6 FLASH EDITION
 Place this file as app.py in your repository.
 """
 
@@ -107,7 +107,7 @@ def process_service_images_gemini(client: genai.Client, image_paths: list, log_p
     
     try:
         response = client.models.generate_content(
-            model='gemini-2.0-flash',
+            model='gemini-3.6-flash',
             contents=[prompt] + images,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -138,7 +138,7 @@ def analyze_speed_test_gemini(client: genai.Client, image_path: str, log_placeho
     
     try:
         response = client.models.generate_content(
-            model='gemini-2.0-flash',
+            model='gemini-3.6-flash',
             contents=[prompt, img],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -172,7 +172,7 @@ def analyze_video_test_gemini(client: genai.Client, image_path: str, log_placeho
     
     try:
         response = client.models.generate_content(
-            model='gemini-2.0-flash',
+            model='gemini-3.6-flash',
             contents=[prompt, img],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -191,7 +191,7 @@ def analyze_voice_test_gemini(client: genai.Client, image_path: str, log_placeho
     
     prompt = (
         "You are a hyper-specialized AI for cellular network engineering. "
-        "Extract Voice Call metrics from this dialer screenshot.\n"
+        "Analyze this dialer screenshot and extract Voice Call metrics.\n"
         "1. 'time': Read the phone clock displayed in the status bar/top header (e.g. '12:48' or '01:39').\n"
         "2. 'call_duration_seconds': Convert the active call timer (e.g. '01:05') to total seconds (65). If there is no timer, return null.\n"
         "3. 'call_status': Return 'active' if a timer is running, otherwise 'dialing'.\n\n"
@@ -203,7 +203,7 @@ def analyze_voice_test_gemini(client: genai.Client, image_path: str, log_placeho
     
     try:
         response = client.models.generate_content(
-            model='gemini-2.0-flash',
+            model='gemini-3.6-flash',
             contents=[prompt, img],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -301,7 +301,7 @@ def process_file_streamlit(user_file_path: str, api_key: str, temp_dir: str, log
     images_by_sector = {"alpha": [], "beta": [], "gamma": [], "voicetest": [], "unknown": []}
     for p in image_paths: images_by_sector[Path(p).stem.split("_")[0]].append(p)
 
-    log_append(text_area_placeholder, logs, "[LOG] Starting Gemini 2.0 Flash VLM processing...")
+    log_append(text_area_placeholder, logs, "[LOG] Starting Gemini 3.6 Flash VLM processing...")
     
     # Process Sector Service & Test Images
     for sector in ["alpha", "beta", "gamma"]:
@@ -368,8 +368,8 @@ def process_file_streamlit(user_file_path: str, api_key: str, temp_dir: str, log
 
 # ---------------- Streamlit UI ----------------
 def main_ui():
-    st.set_page_config(page_title="Cellular Template Processor (Gemini 2.0)", layout="wide")
-    st.title("Advanced Cellular Template Processor (Gemini 2.0 Flash Edition)")
+    st.set_page_config(page_title="Cellular Template Processor (Gemini 3.6)", layout="wide")
+    st.title("Advanced Cellular Template Processor (Gemini 3.6 Flash Edition)")
     
     st.sidebar.header("Google AI Studio Settings")
     api_key_input = st.sidebar.text_input("Google AI Studio API Key", type="password", placeholder="AIzaSy...")
