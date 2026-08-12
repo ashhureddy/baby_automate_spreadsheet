@@ -241,7 +241,7 @@ def extract_images_from_excel(xlsx_path: str, output_folder: str, log_placeholde
     return saved_paths
 
 def _normalize_name(s: str) -> str: return re.sub(r"[^0-9a-zA-Z]", "", s).lower()
-key_pattern = re.compile(r"\[['\"]([^'\"]+)['\"]\]")
+key_pattern = re.compile(r"\[['\"]?([^'\"\]]+)['\"]?\]")
 
 def resolve_expression_with_vars(expr: str, allowed_vars: dict):
     expr = expr.strip()
