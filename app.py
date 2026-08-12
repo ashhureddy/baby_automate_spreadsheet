@@ -65,7 +65,7 @@ def extract_text_from_image(img_path: str, psm: int = 3, digit_only: bool = Fals
     except pytesseract.TesseractNotFoundError:
         return ""
 
-def extract_text_from_crop(img_path: str, crop_box: tuple, digit_only: bool = True) -> str:
+def extract_text_from_crop(img_path: str, crop_box: tuple, psm: int = 6, digit_only: bool = False) -> str:
     img = cv2.imread(img_path)
     if img is None: return ""
     
@@ -77,7 +77,7 @@ def extract_text_from_crop(img_path: str, crop_box: tuple, digit_only: bool = Tr
     gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     gray = cv2.resize(gray, None, fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
     
-    config = '--psm 7'
+    config = f'--psm {psm}'
     if digit_only: config += ' -c tessedit_char_whitelist=0123456789.-'
         
     try:
@@ -127,57 +127,58 @@ def process_service_images_local(image_paths: list, log_placeholder, logs: list)
     return data
 
 def analyze_speed_test_local(image_path: str, log_placeholder, logs: list) -> Optional[dict]:
-    # 1. Primary Method: Extract all text and use robust Regex
-    full_text = extract_text_from_image(image_path, psm=3)
-    # Strip commas so numbers like 1,024 are read cleanly as 1024
-    clean_text = full_text.replace(',', '')
-    
-    dl, ul, ping = None, None, None
-    
-    # Look for "Download" (and optional "Mbps"), then grab the next sequence of digits
-    dl_match = re.search(r'Download.*?Mbps[\s\n]*([\d\.]+)', clean_text, re.IGNORECASE)
-    if not dl_match:
-        dl_match = re.search(r'Download[\s\n]*([\d\.]+)', clean_text, re.IGNORECASE)
-    if dl_match: dl = dl_match.group(1)
+    # 1. Primary Method: Bounding Boxes 
+    # Use psm=6 (uniform block of text) and digit_only=False to stop hallucinations
+    dl_raw = extract_text_from_crop(image_path, (0.02, 0.30, 0.50, 0.55), psm=6, digit_only=False)
+    ul_raw = extract_text_from_crop(image_path, (0.50, 0.30, 0.98, 0.55), psm=6, digit_only=False)
+    ping_raw = extract_text_from_crop(image_path, (0.05, 0.55, 0.40, 0.70), psm=6, digit_only=False)
 
-    # Look for "Upload"
-    ul_match = re.search(r'Upload.*?Mbps[\s\n]*([\d\.]+)', clean_text, re.IGNORECASE)
-    if not ul_match:
-        ul_match = re.search(r'Upload[\s\n]*([\d\.]+)', clean_text, re.IGNORECASE)
-    if ul_match: ul = ul_match.group(1)
+    def clean_val(raw_text):
+        if not raw_text: return None
+        # Remove commas, then find the first valid number
+        m = re.search(r'(\d{1,4}(?:\.\d+)?)', raw_text.replace(',', ''))
+        return float(m.group(1)) if m else None
+
+    dl_val = clean_val(dl_raw)
+    ul_val = clean_val(ul_raw)
     
-    # Look for "Ping"
-    ping_match = re.search(r'Ping.*?ms[\s\n]*(\d+)', clean_text, re.IGNORECASE)
-    if ping_match: ping = ping_match.group(1)
+    ping_val = None
+    if ping_raw:
+        pm = re.search(r'(?:Ping.*?ms[\s]*)?(\d+)', ping_raw.replace(',', ''), re.IGNORECASE)
+        if pm: ping_val = int(pm.group(1))
 
-    # 2. Fallback Method: Widened Bounding Boxes if Regex missed it
-    if not dl or not ul:
-        dl_text = extract_text_from_crop(image_path, (0.02, 0.30, 0.48, 0.60)) 
-        ul_text = extract_text_from_crop(image_path, (0.50, 0.30, 0.98, 0.60))
-        ping_text = extract_text_from_crop(image_path, (0.05, 0.60, 0.40, 0.75))
+    # 2. Fallback Method: Full Text Regex (If boxes completely missed)
+    if dl_val is None or ul_val is None:
+        full_text = extract_text_from_image(image_path, psm=3)
+        clean_text = full_text.replace(',', '')
         
-        # Clean any non-numeric noise the boxes might have picked up
-        if not dl and dl_text: dl = re.sub(r'[^\d\.]', '', dl_text)
-        if not ul and ul_text: ul = re.sub(r'[^\d\.]', '', ul_text)
-        if not ping and ping_text: ping = re.sub(r'[^\d\.]', '', ping_text)
+        # Look for the specific layout where two numbers sit side-by-side on the next line
+        m = re.search(r'Download.*?Upload.*?\n[^\d]*([\d\.]+)\s+([\d\.]+)', clean_text, re.IGNORECASE)
+        if m:
+            dl_val = float(m.group(1))
+            ul_val = float(m.group(2))
+        else:
+            # Absolute last resort: strict individual matching
+            dl_m = re.search(r'Download[^\d]*([\d\.]+)', clean_text, re.IGNORECASE)
+            ul_m = re.search(r'Upload[^\d]*([\d\.]+)', clean_text, re.IGNORECASE)
+            if dl_m: dl_val = float(dl_m.group(1))
+            if ul_m: ul_val = float(ul_m.group(1))
+            
+            # Prevent the duplicate bug
+            if dl_val == ul_val: ul_val = None 
 
-    try:
-        dl_val = float(dl) if dl else None
-        ul_val = float(ul) if ul else None
+    # Prevent Video Tests from being logged as Speed Tests
+    if dl_val in [2160, 1080, 720, 1440, 480, 2160.0, 1080.0]: return None
+    if dl_val is None and ul_val is None: return None
         
-        # Prevent video screenshots from being logged as speed tests
-        if dl_val in [2160, 1080, 720]: return None 
-        
-        return {
-            "image_type": "speed_test",
-            "data": {
-                "download_mbps": dl_val,
-                "upload_mbps": ul_val,
-                "ping_ms": int(float(ping)) if ping else None,
-            }
+    return {
+        "image_type": "speed_test",
+        "data": {
+            "download_mbps": dl_val,
+            "upload_mbps": ul_val,
+            "ping_ms": ping_val
         }
-    except Exception:
-        return None
+    }
 
 def analyze_video_test_local(image_path: str, log_placeholder, logs: list) -> Optional[dict]:
     full_text = extract_text_from_image(image_path)
@@ -220,7 +221,7 @@ def analyze_voice_test_local(image_path: str, log_placeholder, logs: list) -> Op
 
     # Fallback for Duration using cropping if text extraction missed it entirely
     if duration is None:
-        dur_text = extract_text_from_crop(image_path, (0.35, 0.05, 0.65, 0.15), digit_only=False)
+        dur_text = extract_text_from_crop(image_path, (0.35, 0.05, 0.65, 0.15), psm=7, digit_only=False)
         m = re.search(r'(\d{1,2})[;:\.](\d{2})', dur_text)
         if m:
             duration = int(m.group(1)) * 60 + int(m.group(2))
@@ -282,7 +283,7 @@ def extract_images_from_excel(xlsx_path: str, output_folder: str, log_placeholde
 
 def _normalize_name(s: str) -> str: return re.sub(r"[^0-9a-zA-Z]", "", s).lower()
 
-# UPDATED: More robust regex to handle keys with or without quotes
+# Robust regex to handle keys with or without quotes
 key_pattern = re.compile(r"\[['\"]?([^'\"\]]+)['\"]?\]")
 
 def resolve_expression_with_vars(expr: str, allowed_vars: dict):
