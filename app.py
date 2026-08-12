@@ -106,23 +106,29 @@ def analyze_speed_test_local(image_path: str, log_placeholder, logs: list) -> Op
     clean_text = full_text.replace(',', '')
     
     dl_val, ul_val, ping_val = None, None, None
-
-    # Flexible Regex: Looks for 'Download' then grabs the first number sequence it sees nearby
-    dl_match = re.search(r'Download.*?[\n\s]+([\d\.]+)', clean_text, re.IGNORECASE)
-    if dl_match: dl_val = float(dl_match.group(1))
-
-    ul_match = re.search(r'Upload.*?[\n\s]+([\d\.]+)', clean_text, re.IGNORECASE)
-    if ul_match: ul_val = float(ul_match.group(1))
     
-    ping_match = re.search(r'Ping.*?[\n\s]+(\d+)', clean_text, re.IGNORECASE)
+    # Primary check for side-by-side layout (Download and Upload headers appear before any numbers)
+    m1 = re.search(r'Download.*?Upload[^\d]*([\d\.]+)[^\d]+([\d\.]+)', clean_text, re.IGNORECASE | re.DOTALL)
+    
+    # Secondary check for standard stacked layout
+    dl_match = re.search(r'Download(?:[^\d]+)?([\d\.]+)', clean_text, re.IGNORECASE | re.DOTALL)
+    ul_match = re.search(r'Upload(?:[^\d]+)?([\d\.]+)', clean_text, re.IGNORECASE | re.DOTALL)
+    
+    # Detect if standard layout accidentally duplicated the numbers
+    is_duplicate = False
+    if dl_match and ul_match and dl_match.group(1) == ul_match.group(1):
+        is_duplicate = True
+        
+    # Apply the correct extraction logic based on the layout
+    if m1 and (not dl_match or is_duplicate):
+        dl_val = float(m1.group(1))
+        ul_val = float(m1.group(2))
+    else:
+        if dl_match: dl_val = float(dl_match.group(1))
+        if ul_match: ul_val = float(ul_match.group(1))
+        
+    ping_match = re.search(r'Ping(?:[^\d]+)?(\d+)', clean_text, re.IGNORECASE | re.DOTALL)
     if ping_match: ping_val = int(ping_match.group(1))
-
-    # Fallback layout check if the UI placed the numbers immediately next to each other
-    if dl_val is None or ul_val is None:
-        m = re.search(r'Download.*?Upload.*?\n[^\d]*([\d\.]+)\s+([\d\.]+)', clean_text, re.IGNORECASE)
-        if m:
-            dl_val = float(m.group(1))
-            ul_val = float(m.group(2))
 
     # Duplicate bug prevention & Video Test rejection
     if dl_val == ul_val: ul_val = None 
