@@ -241,6 +241,8 @@ def extract_images_from_excel(xlsx_path: str, output_folder: str, log_placeholde
     return saved_paths
 
 def _normalize_name(s: str) -> str: return re.sub(r"[^0-9a-zA-Z]", "", s).lower()
+
+# UPDATED: More robust regex to handle keys with or without quotes
 key_pattern = re.compile(r"\[['\"]?([^'\"\]]+)['\"]?\]")
 
 def resolve_expression_with_vars(expr: str, allowed_vars: dict):
@@ -319,16 +321,20 @@ def process_file_streamlit(user_file_path: str, temp_dir: str, logs: list, text_
         col = getattr(font, "color", None)
         return str(getattr(col, "rgb", "")).upper().endswith("FF0000")
 
+    # UPDATED: Safe mapping block
     for row in sheet.iter_rows():
         for cell in row:
             if isinstance(cell.value, str) and _is_red(cell.font):
-               expr = cell.value.strip()
+                expr = cell.value.strip()
+                
                 # Only strip outer quotes if the whole expression was accidentally wrapped
                 if (expr.startswith('"') and expr.endswith('"')) or (expr.startswith("'") and expr.endswith("'")):
                     expr = expr[1:-1].strip()
+                
                 resolved = resolve_expression_with_vars(expr, allowed_vars)
+                
                 if resolved is not None:
-                    # FIX: Convert dicts/lists to strings so Excel doesn't crash
+                    # Convert dicts/lists to strings so Excel doesn't crash
                     if isinstance(resolved, (dict, list, tuple)):
                         try:
                             cell.value = json.dumps(resolved)
