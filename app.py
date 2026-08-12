@@ -92,61 +92,81 @@ def process_service_images_local(image_paths: list, log_placeholder, logs: list)
     for path in image_paths:
         if path: full_text += extract_text_from_image(path) + "\n"
         
-    # LTE Regex
-    m = re.search(r'Earfcn:\s*(\d+)', full_text, re.IGNORECASE)
+    # LTE Regex (Jumps over noisy colons/spaces)
+    m = re.search(r'Earfcn[^\d]*(\d+)', full_text, re.IGNORECASE)
     if m: data['lte_earfcn'] = int(m.group(1))
-    m = re.search(r'PCI:\s*(\d+)', full_text, re.IGNORECASE)
+    m = re.search(r'PCI[^\d]*(\d+)', full_text, re.IGNORECASE)
     if m: data['lte_pci'] = int(m.group(1))
-    m = re.search(r'LTE.*?BAND:\s*(\d+)', full_text, re.IGNORECASE)
+    m = re.search(r'LTE.*?BAND[^\d]*(\d+)', full_text, re.IGNORECASE)
     if m: data['lte_band'] = int(m.group(1))
-    m = re.search(r'LTE.*?BW:\s*(\d+)', full_text, re.IGNORECASE)
+    m = re.search(r'LTE.*?BW[^\d]*(\d+)', full_text, re.IGNORECASE)
     if m: data['lte_bw'] = int(m.group(1))
-    m = re.search(r'RSRP:\s*(-?\d+)', full_text, re.IGNORECASE)
+    m = re.search(r'RSRP[^\d\-]*(-?\d+)', full_text, re.IGNORECASE)
     if m: data['lte_rsrp'] = int(m.group(1))
-    m = re.search(r'RSRQ:\s*(-?\d+)', full_text, re.IGNORECASE)
+    m = re.search(r'RSRQ[^\d\-]*(-?\d+)', full_text, re.IGNORECASE)
     if m: data['lte_rsrq'] = int(m.group(1))
-    m = re.search(r'SNR:\s*([\d\.-]+)', full_text, re.IGNORECASE)
+    m = re.search(r'SNR[^\d\-]*([\d\.-]+)', full_text, re.IGNORECASE)
     if m: data['lte_sinr'] = float(m.group(1))
         
     # NR Regex
-    m = re.search(r'NR5G_RSRP\s*:\s*(-?\d+)', full_text, re.IGNORECASE)
+    m = re.search(r'NR5G_RSRP[^\d\-]*(-?\d+)', full_text, re.IGNORECASE)
     if m: data['nr5g_rsrp'] = int(m.group(1))
-    m = re.search(r'NR5G_SINR\s*:\s*([\d\.-]+)', full_text, re.IGNORECASE)
+    m = re.search(r'NR5G_SINR[^\d\-]*([\d\.-]+)', full_text, re.IGNORECASE)
     if m: data['nr5g_sinr'] = float(m.group(1))
-    m = re.search(r'NR5G RSRQ\s*:\s*(-?\d+)', full_text, re.IGNORECASE)
+    m = re.search(r'NR5G RSRQ[^\d\-]*(-?\d+)', full_text, re.IGNORECASE)
     if m: data['nr5g_rsrq'] = int(m.group(1))
-    m = re.search(r'NR_ARFCN:\s*(\d+)', full_text, re.IGNORECASE)
+    m = re.search(r'NR_ARFCN[^\d]*(\d+)', full_text, re.IGNORECASE)
     if m: data['nr_arfcn'] = int(m.group(1))
-    m = re.search(r'NR_PCI:\s*(\d+)', full_text, re.IGNORECASE)
+    m = re.search(r'NR_PCI[^\d]*(\d+)', full_text, re.IGNORECASE)
     if m: data['nr_pci'] = int(m.group(1))
-    m = re.search(r'NR_BAND:\s*[nN]?(\d+)', full_text, re.IGNORECASE)
+    m = re.search(r'NR_BAND[^\d]*[nN]?(\d+)', full_text, re.IGNORECASE)
     if m: data['nr_band'] = int(m.group(1))
-    m = re.search(r'NR_BW:\s*(\d+)', full_text, re.IGNORECASE)
+    m = re.search(r'NR_BW[^\d]*(\d+)', full_text, re.IGNORECASE)
     if m: data['nr_bw'] = int(m.group(1))
 
     return data
 
 def analyze_speed_test_local(image_path: str, log_placeholder, logs: list) -> Optional[dict]:
-    # Bounding Boxes for Ookla Standard UI (Adjust these if your device resolution differs heavily)
-    dl_text = extract_text_from_crop(image_path, (0.05, 0.35, 0.45, 0.55))
-    ul_text = extract_text_from_crop(image_path, (0.55, 0.35, 0.95, 0.55))
-    ping_text = extract_text_from_crop(image_path, (0.15, 0.60, 0.35, 0.70))
+    # 1. Primary Method: Extract all text and use robust Regex
+    full_text = extract_text_from_image(image_path, psm=3)
+    # Strip commas so numbers like 1,024 are read cleanly as 1024
+    clean_text = full_text.replace(',', '')
     
-    dl = dl_text.replace(',', '')
-    ul = ul_text.replace(',', '')
-    ping = ping_text.replace(',', '')
+    dl, ul, ping = None, None, None
     
+    # Look for "Download" (and optional "Mbps"), then grab the next sequence of digits
+    dl_match = re.search(r'Download.*?Mbps[\s\n]*([\d\.]+)', clean_text, re.IGNORECASE)
+    if not dl_match:
+        dl_match = re.search(r'Download[\s\n]*([\d\.]+)', clean_text, re.IGNORECASE)
+    if dl_match: dl = dl_match.group(1)
+
+    # Look for "Upload"
+    ul_match = re.search(r'Upload.*?Mbps[\s\n]*([\d\.]+)', clean_text, re.IGNORECASE)
+    if not ul_match:
+        ul_match = re.search(r'Upload[\s\n]*([\d\.]+)', clean_text, re.IGNORECASE)
+    if ul_match: ul = ul_match.group(1)
+    
+    # Look for "Ping"
+    ping_match = re.search(r'Ping.*?ms[\s\n]*(\d+)', clean_text, re.IGNORECASE)
+    if ping_match: ping = ping_match.group(1)
+
+    # 2. Fallback Method: Widened Bounding Boxes if Regex missed it
     if not dl or not ul:
-        full_text = extract_text_from_image(image_path)
-        dl_match = re.search(r'Download.*?(\d{1,4}(?:\.\d+)?)', full_text, re.IGNORECASE | re.DOTALL)
-        ul_match = re.search(r'Upload.*?(\d{1,4}(?:\.\d+)?)', full_text, re.IGNORECASE | re.DOTALL)
-        if dl_match: dl = dl_match.group(1)
-        if ul_match: ul = ul_match.group(1)
+        dl_text = extract_text_from_crop(image_path, (0.02, 0.30, 0.48, 0.60)) 
+        ul_text = extract_text_from_crop(image_path, (0.50, 0.30, 0.98, 0.60))
+        ping_text = extract_text_from_crop(image_path, (0.05, 0.60, 0.40, 0.75))
+        
+        # Clean any non-numeric noise the boxes might have picked up
+        if not dl and dl_text: dl = re.sub(r'[^\d\.]', '', dl_text)
+        if not ul and ul_text: ul = re.sub(r'[^\d\.]', '', ul_text)
+        if not ping and ping_text: ping = re.sub(r'[^\d\.]', '', ping_text)
 
     try:
         dl_val = float(dl) if dl else None
         ul_val = float(ul) if ul else None
-        if dl_val in [2160, 1080]: return None 
+        
+        # Prevent video screenshots from being logged as speed tests
+        if dl_val in [2160, 1080, 720]: return None 
         
         return {
             "image_type": "speed_test",
@@ -161,37 +181,57 @@ def analyze_speed_test_local(image_path: str, log_placeholder, logs: list) -> Op
 
 def analyze_video_test_local(image_path: str, log_placeholder, logs: list) -> Optional[dict]:
     full_text = extract_text_from_image(image_path)
-    res_match = re.search(r'(\d+)p', full_text)
-    load_match = re.search(r'Load Time\s*(\d+)', full_text, re.IGNORECASE)
+    
+    # Catch 2160, 1080, 720, or 4K regardless of formatting
+    res_match = re.search(r'(2160|1080|720|1440|4K)', full_text, re.IGNORECASE)
+    load_match = re.search(r'Load.*?Time[^\d]*(\d+)', full_text, re.IGNORECASE)
+    buf_match = re.search(r'Buffering[^\d]*(\d+)', full_text, re.IGNORECASE)
     
     if not res_match and not load_match: return None
+    
+    resolution = res_match.group(1) if res_match else None
+    if resolution == "4K": resolution = "2160"
     
     return {
         "image_type": "video_test",
         "data": {
-            "max_resolution": f"{res_match.group(1)}p" if res_match else None,
+            "max_resolution": f"{resolution}p" if resolution else None,
             "load_time_ms": int(load_match.group(1)) if load_match else None,
+            "buffering_percentage": int(buf_match.group(1)) if buf_match else 0
         }
     }
 
 def analyze_voice_test_local(image_path: str, log_placeholder, logs: list) -> Optional[dict]:
-    timer_text = extract_text_from_crop(image_path, (0.35, 0.02, 0.65, 0.15), digit_only=False)
+    full_text = extract_text_from_image(image_path)
     
-    if ':' not in timer_text:
-        full_text = extract_text_from_image(image_path)
-        timer_match = re.search(r'(\d{2}):(\d{2})', full_text)
-        timer_text = timer_match.group(0) if timer_match else ""
-        
+    # Find all timestamps (e.g. 12:48 or 01:05) in the text
+    time_matches = re.findall(r'(\d{1,2})[;:\.](\d{2})', full_text)
+    
+    extracted_time = None
     duration = None
-    if timer_text:
-        try:
-            parts = timer_text.split(':')
-            duration = int(parts[0]) * 60 + int(parts[1])
-        except: pass
+    
+    if len(time_matches) >= 2:
+        # First match is usually the phone clock (Time), second is the Call Duration
+        extracted_time = f"{time_matches[0][0]}:{time_matches[0][1]}"
+        duration = int(time_matches[1][0]) * 60 + int(time_matches[1][1])
+    elif len(time_matches) == 1:
+        # If only one is found, assume it's the duration
+        duration = int(time_matches[0][0]) * 60 + int(time_matches[0][1])
+
+    # Fallback for Duration using cropping if text extraction missed it entirely
+    if duration is None:
+        dur_text = extract_text_from_crop(image_path, (0.35, 0.05, 0.65, 0.15), digit_only=False)
+        m = re.search(r'(\d{1,2})[;:\.](\d{2})', dur_text)
+        if m:
+            duration = int(m.group(1)) * 60 + int(m.group(2))
             
     return {
         "image_type": "voice_call",
-        "data": {"call_duration_seconds": duration, "call_status": "active" if duration else "dialing"}
+        "data": {
+            "time": extracted_time,
+            "call_duration_seconds": duration, 
+            "call_status": "active" if duration else "dialing"
+        }
     }
 
 def dispatch_image_analysis_local(image_path: str, log_placeholder, logs: list) -> Optional[dict]:
@@ -321,7 +361,7 @@ def process_file_streamlit(user_file_path: str, temp_dir: str, logs: list, text_
         col = getattr(font, "color", None)
         return str(getattr(col, "rgb", "")).upper().endswith("FF0000")
 
-    # UPDATED: Safe mapping block
+    # Safe mapping block
     for row in sheet.iter_rows():
         for cell in row:
             if isinstance(cell.value, str) and _is_red(cell.font):
