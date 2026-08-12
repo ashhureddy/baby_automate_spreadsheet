@@ -1,6 +1,6 @@
 """
-Streamlit app for Advanced Cellular Template Processing - LOCAL OCR EDITION
-Place this file as app.py in your repository. No API keys required.
+Streamlit app for Advanced Cellular Template Processing - GEMINI 2.0 FLASH EDITION
+Place this file as app.py in your repository.
 """
 
 import os
@@ -15,15 +15,56 @@ from typing import Optional, List
 import streamlit as st
 import openpyxl
 from PIL import Image
-import cv2
-import pytesseract
+from google import genai
+from google.genai import types
 
 # ---------------- Schemas ----------------
 SERVICE_SCHEMA = {
-    "nr_arfcn": "number", "nr_band": "number", "nr_pci": "number", "nr_bw": "number",
-    "nr5g_rsrp": "number", "nr5g_rsrq": "number", "nr5g_sinr": "number",
-    "lte_band": "number", "lte_earfcn": "number", "lte_pci": "number", "lte_bw": "number",
-    "lte_rsrp": "number", "lte_rsrq": "number", "lte_sinr": "number",
+    "type": "OBJECT",
+    "properties": {
+        "nr_arfcn": {"type": "NUMBER"},
+        "nr_band": {"type": "NUMBER"},
+        "nr_pci": {"type": "NUMBER"},
+        "nr_bw": {"type": "NUMBER"},
+        "nr5g_rsrp": {"type": "NUMBER"},
+        "nr5g_rsrq": {"type": "NUMBER"},
+        "nr5g_sinr": {"type": "NUMBER"},
+        "lte_band": {"type": "NUMBER"},
+        "lte_earfcn": {"type": "NUMBER"},
+        "lte_pci": {"type": "NUMBER"},
+        "lte_bw": {"type": "NUMBER"},
+        "lte_rsrp": {"type": "NUMBER"},
+        "lte_rsrq": {"type": "NUMBER"},
+        "lte_sinr": {"type": "NUMBER"},
+    }
+}
+
+SPEEDTEST_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "download_mbps": {"type": "NUMBER"},
+        "upload_mbps": {"type": "NUMBER"},
+        "ping_ms": {"type": "NUMBER"},
+        "jitter_ms": {"type": "NUMBER"}
+    }
+}
+
+VIDEOTEST_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "max_resolution": {"type": "STRING"},
+        "load_time_ms": {"type": "NUMBER"},
+        "buffering_percentage": {"type": "NUMBER"}
+    }
+}
+
+VOICETEST_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "time": {"type": "STRING"},
+        "call_duration_seconds": {"type": "NUMBER"},
+        "call_status": {"type": "STRING"}
+    }
 }
 
 # ---------------- Globals ----------------
@@ -49,211 +90,130 @@ def get_sector_from_col(col_index: int) -> str:
     if 12 <= col_index < 18: return "voicetest"
     return "unknown"
 
-# ---------------- OCR Engine Helpers ----------------
-def extract_text_from_image(img_path: str, psm: int = 3, digit_only: bool = False) -> str:
-    img = cv2.imread(img_path)
-    if img is None: return ""
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    gray = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+# ---------------- Gemini API Analysis Modules ----------------
+def process_service_images_gemini(client: genai.Client, image_paths: list, log_placeholder, logs: list) -> dict:
+    valid_paths = [p for p in image_paths if p and os.path.exists(p)]
+    if not valid_paths: return {}
     
-    config = f'--psm {psm}'
-    if digit_only:
-        config += ' -c tessedit_char_whitelist=0123456789.-'
-        
+    images = [Image.open(p) for p in valid_paths]
+    prompt = (
+        "You are a Senior RF Engineer validating 5G/LTE drive test screenshots. "
+        "Analyze the provided ServiceMode screenshots and extract all cellular engineering metrics. "
+        "Return ONLY a JSON object matching the requested schema. Use null for missing values."
+    )
+    
     try:
-        return pytesseract.image_to_string(gray, config=config)
-    except pytesseract.TesseractNotFoundError:
-        return ""
+        response = client.models.generate_content(
+            model='gemini-2.0-flash',
+            contents=[prompt] + images,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=SERVICE_SCHEMA
+            )
+        )
+        return json.loads(response.text)
+    except Exception as e:
+        log_append(log_placeholder, logs, f"[ERROR] ServiceMode extraction failed: {e}")
+        return {}
 
-def extract_text_from_crop(img_path: str, crop_box: tuple, psm: int = 6, digit_only: bool = False) -> str:
-    img = cv2.imread(img_path)
-    if img is None: return ""
+def analyze_speed_test_gemini(client: genai.Client, image_path: str, log_placeholder, logs: list) -> Optional[dict]:
+    if not os.path.exists(image_path): return None
+    img = Image.open(image_path)
     
-    h, w = img.shape[:2]
-    x1, y1 = int(w * crop_box[0]), int(h * crop_box[1])
-    x2, y2 = int(w * crop_box[2]), int(h * crop_box[3])
+    prompt = (
+        "Extract SPEED TEST metrics (download_mbps, upload_mbps, ping_ms, jitter_ms) from this Ookla Speedtest screenshot.\n"
+        "RULES:\n"
+        "1. Download speed is under the 'Download' heading, Upload speed is under 'Upload'. Do NOT confuse them.\n"
+        "2. Do NOT report 2160, 1080, 720, or 1440 video resolutions as speed.\n"
+        "3. Ignore commas in numbers (e.g. 1,071 = 1071)."
+    )
     
-    roi = img[y1:y2, x1:x2]
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    gray = cv2.resize(gray, None, fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
-    
-    config = f'--psm {psm}'
-    if digit_only: config += ' -c tessedit_char_whitelist=0123456789.-'
-        
     try:
-        return pytesseract.image_to_string(gray, config=config).strip()
-    except pytesseract.TesseractNotFoundError:
-        return ""
-
-# ---------------- Analysis Modules ----------------
-def process_service_images_local(image_paths: list, log_placeholder, logs: list) -> dict:
-    data = {}
-    full_text = ""
-    for path in image_paths:
-        if path: full_text += extract_text_from_image(path) + "\n"
+        response = client.models.generate_content(
+            model='gemini-2.0-flash',
+            contents=[prompt, img],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=SPEEDTEST_SCHEMA
+            )
+        )
+        data = json.loads(response.text)
         
-    # LTE Regex (Jumps over noisy colons/spaces)
-    m = re.search(r'Earfcn[^\d]*(\d+)', full_text, re.IGNORECASE)
-    if m: data['lte_earfcn'] = int(m.group(1))
-    m = re.search(r'PCI[^\d]*(\d+)', full_text, re.IGNORECASE)
-    if m: data['lte_pci'] = int(m.group(1))
-    m = re.search(r'LTE.*?BAND[^\d]*(\d+)', full_text, re.IGNORECASE)
-    if m: data['lte_band'] = int(m.group(1))
-    m = re.search(r'LTE.*?BW[^\d]*(\d+)', full_text, re.IGNORECASE)
-    if m: data['lte_bw'] = int(m.group(1))
-    m = re.search(r'RSRP[^\d\-]*(-?\d+)', full_text, re.IGNORECASE)
-    if m: data['lte_rsrp'] = int(m.group(1))
-    m = re.search(r'RSRQ[^\d\-]*(-?\d+)', full_text, re.IGNORECASE)
-    if m: data['lte_rsrq'] = int(m.group(1))
-    m = re.search(r'SNR[^\d\-]*([\d\.-]+)', full_text, re.IGNORECASE)
-    if m: data['lte_sinr'] = float(m.group(1))
+        # Sanity check: Reject video resolutions misidentified as download speed
+        dl = data.get("download_mbps")
+        if dl in [2160, 1080, 720, 1440, 2160.0, 1080.0]: return None
+        if dl is None and data.get("upload_mbps") is None: return None
         
-    # NR Regex
-    m = re.search(r'NR5G_RSRP[^\d\-]*(-?\d+)', full_text, re.IGNORECASE)
-    if m: data['nr5g_rsrp'] = int(m.group(1))
-    m = re.search(r'NR5G_SINR[^\d\-]*([\d\.-]+)', full_text, re.IGNORECASE)
-    if m: data['nr5g_sinr'] = float(m.group(1))
-    m = re.search(r'NR5G RSRQ[^\d\-]*(-?\d+)', full_text, re.IGNORECASE)
-    if m: data['nr5g_rsrq'] = int(m.group(1))
-    m = re.search(r'NR_ARFCN[^\d]*(\d+)', full_text, re.IGNORECASE)
-    if m: data['nr_arfcn'] = int(m.group(1))
-    m = re.search(r'NR_PCI[^\d]*(\d+)', full_text, re.IGNORECASE)
-    if m: data['nr_pci'] = int(m.group(1))
-    m = re.search(r'NR_BAND[^\d]*[nN]?(\d+)', full_text, re.IGNORECASE)
-    if m: data['nr_band'] = int(m.group(1))
-    m = re.search(r'NR_BW[^\d]*(\d+)', full_text, re.IGNORECASE)
-    if m: data['nr_bw'] = int(m.group(1))
+        return {"image_type": "speed_test", "data": data}
+    except Exception as e:
+        log_append(log_placeholder, logs, f"[ERROR] Speedtest failed: {e}")
+        return None
 
-    return data
-
-def analyze_speed_test_local(image_path: str, log_placeholder, logs: list) -> Optional[dict]:
-    # 1. Primary Method: Bounding Boxes 
-    # Use psm=6 (uniform block of text) and digit_only=False to stop hallucinations
-    dl_raw = extract_text_from_crop(image_path, (0.02, 0.30, 0.50, 0.55), psm=6, digit_only=False)
-    ul_raw = extract_text_from_crop(image_path, (0.50, 0.30, 0.98, 0.55), psm=6, digit_only=False)
-    ping_raw = extract_text_from_crop(image_path, (0.05, 0.55, 0.40, 0.70), psm=6, digit_only=False)
-
-    def clean_val(raw_text):
-        if not raw_text: return None
-        # Remove commas, then find the first valid number
-        m = re.search(r'(\d{1,4}(?:\.\d+)?)', raw_text.replace(',', ''))
-        return float(m.group(1)) if m else None
-
-    dl_val = clean_val(dl_raw)
-    ul_val = clean_val(ul_raw)
+def analyze_video_test_gemini(client: genai.Client, image_path: str, log_placeholder, logs: list) -> Optional[dict]:
+    if not os.path.exists(image_path): return None
+    img = Image.open(image_path)
     
-    ping_val = None
-    if ping_raw:
-        pm = re.search(r'(?:Ping.*?ms[\s]*)?(\d+)', ping_raw.replace(',', ''), re.IGNORECASE)
-        if pm: ping_val = int(pm.group(1))
+    prompt = "Extract Video Test metrics (max_resolution like '2160p', load_time_ms, buffering_percentage) from this screenshot."
+    
+    try:
+        response = client.models.generate_content(
+            model='gemini-2.0-flash',
+            contents=[prompt, img],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=VIDEOTEST_SCHEMA
+            )
+        )
+        data = json.loads(response.text)
+        if not data.get("max_resolution") and not data.get("load_time_ms"): return None
+        return {"image_type": "video_test", "data": data}
+    except Exception as e:
+        return None
 
-    # 2. Fallback Method: Full Text Regex (If boxes completely missed)
-    if dl_val is None or ul_val is None:
-        full_text = extract_text_from_image(image_path, psm=3)
-        clean_text = full_text.replace(',', '')
-        
-        # Look for the specific layout where two numbers sit side-by-side on the next line
-        m = re.search(r'Download.*?Upload.*?\n[^\d]*([\d\.]+)\s+([\d\.]+)', clean_text, re.IGNORECASE)
-        if m:
-            dl_val = float(m.group(1))
-            ul_val = float(m.group(2))
-        else:
-            # Absolute last resort: strict individual matching
-            dl_m = re.search(r'Download[^\d]*([\d\.]+)', clean_text, re.IGNORECASE)
-            ul_m = re.search(r'Upload[^\d]*([\d\.]+)', clean_text, re.IGNORECASE)
-            if dl_m: dl_val = float(dl_m.group(1))
-            if ul_m: ul_val = float(ul_m.group(1))
-            
-            # Prevent the duplicate bug
-            if dl_val == ul_val: ul_val = None 
+def analyze_voice_test_gemini(client: genai.Client, image_path: str, log_placeholder, logs: list) -> Optional[dict]:
+    if not os.path.exists(image_path): return None
+    img = Image.open(image_path)
+    
+    prompt = (
+        "Extract Voice Call metrics from this dialer screenshot.\n"
+        "1. 'time': Read the phone clock displayed in the status bar/top header (e.g. '12:48' or '01:39').\n"
+        "2. 'call_duration_seconds': Convert the active call timer (e.g. '01:05') to total seconds (65). If there is no timer, return null.\n"
+        "3. 'call_status': Return 'active' if a timer is running, otherwise 'dialing'."
+    )
+    
+    try:
+        response = client.models.generate_content(
+            model='gemini-2.0-flash',
+            contents=[prompt, img],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=VOICETEST_SCHEMA
+            )
+        )
+        data = json.loads(response.text)
+        return {"image_type": "voice_call", "data": data}
+    except Exception as e:
+        return None
 
-    # Prevent Video Tests from being logged as Speed Tests
-    if dl_val in [2160, 1080, 720, 1440, 480, 2160.0, 1080.0]: return None
-    if dl_val is None and ul_val is None: return None
-        
-    return {
-        "image_type": "speed_test",
-        "data": {
-            "download_mbps": dl_val,
-            "upload_mbps": ul_val,
-            "ping_ms": ping_val
-        }
-    }
-
-def analyze_video_test_local(image_path: str, log_placeholder, logs: list) -> Optional[dict]:
-    full_text = extract_text_from_image(image_path)
-    
-    # Catch 2160, 1080, 720, or 4K regardless of formatting
-    res_match = re.search(r'(2160|1080|720|1440|4K)', full_text, re.IGNORECASE)
-    load_match = re.search(r'Load.*?Time[^\d]*(\d+)', full_text, re.IGNORECASE)
-    buf_match = re.search(r'Buffering[^\d]*(\d+)', full_text, re.IGNORECASE)
-    
-    if not res_match and not load_match: return None
-    
-    resolution = res_match.group(1) if res_match else None
-    if resolution == "4K": resolution = "2160"
-    
-    return {
-        "image_type": "video_test",
-        "data": {
-            "max_resolution": f"{resolution}p" if resolution else None,
-            "load_time_ms": int(load_match.group(1)) if load_match else None,
-            "buffering_percentage": int(buf_match.group(1)) if buf_match else 0
-        }
-    }
-
-def analyze_voice_test_local(image_path: str, log_placeholder, logs: list) -> Optional[dict]:
-    full_text = extract_text_from_image(image_path)
-    
-    # Find all timestamps (e.g. 12:48 or 01:05) in the text
-    time_matches = re.findall(r'(\d{1,2})[;:\.](\d{2})', full_text)
-    
-    extracted_time = None
-    duration = None
-    
-    if len(time_matches) >= 2:
-        # First match is usually the phone clock (Time), second is the Call Duration
-        extracted_time = f"{time_matches[0][0]}:{time_matches[0][1]}"
-        duration = int(time_matches[1][0]) * 60 + int(time_matches[1][1])
-    elif len(time_matches) == 1:
-        # If only one is found, assume it's the duration
-        duration = int(time_matches[0][0]) * 60 + int(time_matches[0][1])
-
-    # Fallback for Duration using cropping if text extraction missed it entirely
-    if duration is None:
-        dur_text = extract_text_from_crop(image_path, (0.35, 0.05, 0.65, 0.15), psm=7, digit_only=False)
-        m = re.search(r'(\d{1,2})[;:\.](\d{2})', dur_text)
-        if m:
-            duration = int(m.group(1)) * 60 + int(m.group(2))
-            
-    return {
-        "image_type": "voice_call",
-        "data": {
-            "time": extracted_time,
-            "call_duration_seconds": duration, 
-            "call_status": "active" if duration else "dialing"
-        }
-    }
-
-def dispatch_image_analysis_local(image_path: str, log_placeholder, logs: list) -> Optional[dict]:
+def dispatch_image_analysis_gemini(client: genai.Client, image_path: str, log_placeholder, logs: list) -> Optional[dict]:
     try: idx = int(Path(image_path).stem.split("_")[-1])
     except: idx = 0
 
     if 3 <= idx <= 7:
-        priority = [analyze_speed_test_local, analyze_video_test_local, analyze_voice_test_local]
+        priority = [analyze_speed_test_gemini, analyze_video_test_gemini, analyze_voice_test_gemini]
     elif idx >= 8:
-        priority = [analyze_video_test_local, analyze_speed_test_local, analyze_voice_test_local]
+        priority = [analyze_video_test_gemini, analyze_speed_test_gemini, analyze_voice_test_gemini]
     else:
-        priority = [analyze_speed_test_local, analyze_video_test_local, analyze_voice_test_local]
+        priority = [analyze_speed_test_gemini, analyze_video_test_gemini, analyze_voice_test_gemini]
 
     for func in priority:
-        res = func(image_path, log_placeholder, logs)
+        res = func(client, image_path, log_placeholder, logs)
         if res and res.get("data"):
             if res["image_type"] == "speed_test" and res["data"].get("download_mbps") is None: continue
             return res
     return None
 
-# ---------------- Excel Processing logic ----------------
+# ---------------- Excel Extraction & Injection ----------------
 def extract_images_from_excel(xlsx_path: str, output_folder: str, log_placeholder, logs: list) -> List[str]:
     wb = openpyxl.load_workbook(xlsx_path)
     sheet = wb.active
@@ -282,8 +242,6 @@ def extract_images_from_excel(xlsx_path: str, output_folder: str, log_placeholde
     return saved_paths
 
 def _normalize_name(s: str) -> str: return re.sub(r"[^0-9a-zA-Z]", "", s).lower()
-
-# Robust regex to handle keys with or without quotes
 key_pattern = re.compile(r"\[['\"]?([^'\"\]]+)['\"]?\]")
 
 def resolve_expression_with_vars(expr: str, allowed_vars: dict):
@@ -312,30 +270,32 @@ def resolve_expression_with_vars(expr: str, allowed_vars: dict):
         return obj
     except: return None
 
-def process_file_streamlit(user_file_path: str, temp_dir: str, logs: list, text_area_placeholder) -> Optional[str]:
+def process_file_streamlit(user_file_path: str, api_key: str, temp_dir: str, logs: list, text_area_placeholder) -> Optional[str]:
     global alpha_service, beta_service, gamma_service, alpha_speedtest, beta_speedtest, gamma_speedtest
     global alpha_video, beta_video, gamma_video, voice_test, avearge
 
+    client = genai.Client(api_key=api_key)
     images_temp = os.path.join(temp_dir, "images")
     image_paths = extract_images_from_excel(user_file_path, images_temp, text_area_placeholder, logs)
 
     images_by_sector = {"alpha": [], "beta": [], "gamma": [], "voicetest": [], "unknown": []}
     for p in image_paths: images_by_sector[Path(p).stem.split("_")[0]].append(p)
 
-    log_append(text_area_placeholder, logs, "[LOG] Starting Local OCR mapping...")
+    log_append(text_area_placeholder, logs, "[LOG] Starting Gemini 2.0 Flash VLM processing...")
     
+    # Process Sector Service & Test Images
     for sector in ["alpha", "beta", "gamma"]:
         sector_images = images_by_sector[sector]
         img1 = next((p for p in sector_images if Path(p).stem.endswith("_1")), None)
         img2 = next((p for p in sector_images if Path(p).stem.endswith("_2")), None)
 
-        svc = process_service_images_local([img1, img2], text_area_placeholder, logs)
+        svc = process_service_images_gemini(client, [img1, img2], text_area_placeholder, logs)
         if sector == "alpha": alpha_service = svc
         elif sector == "beta": beta_service = svc
         elif sector == "gamma": gamma_service = svc
 
         for img in [p for p in sector_images if p not in (img1, img2)]:
-            res = dispatch_image_analysis_local(img, text_area_placeholder, logs)
+            res = dispatch_image_analysis_gemini(client, img, text_area_placeholder, logs)
             if res:
                 name = Path(img).stem
                 if res["image_type"] == "speed_test":
@@ -343,10 +303,12 @@ def process_file_streamlit(user_file_path: str, temp_dir: str, logs: list, text_
                 elif res["image_type"] == "video_test":
                     {"alpha": alpha_video, "beta": beta_video, "gamma": gamma_video}[sector][name] = res["data"]
 
+    # Process Voice Sector
     for img in images_by_sector["voicetest"]:
-        res = analyze_voice_test_local(img, text_area_placeholder, logs)
+        res = analyze_voice_test_gemini(client, img, text_area_placeholder, logs)
         if res: voice_test[Path(img).stem] = res["data"]
 
+    # Map extracted values back into Excel
     wb = openpyxl.load_workbook(user_file_path)
     sheet = wb.active
     
@@ -362,43 +324,36 @@ def process_file_streamlit(user_file_path: str, temp_dir: str, logs: list, text_
         col = getattr(font, "color", None)
         return str(getattr(col, "rgb", "")).upper().endswith("FF0000")
 
-    # Safe mapping block
     for row in sheet.iter_rows():
         for cell in row:
             if isinstance(cell.value, str) and _is_red(cell.font):
                 expr = cell.value.strip()
-                
-                # Only strip outer quotes if the whole expression was accidentally wrapped
                 if (expr.startswith('"') and expr.endswith('"')) or (expr.startswith("'") and expr.endswith("'")):
                     expr = expr[1:-1].strip()
                 
                 resolved = resolve_expression_with_vars(expr, allowed_vars)
                 
                 if resolved is not None:
-                    # Convert dicts/lists to strings so Excel doesn't crash
                     if isinstance(resolved, (dict, list, tuple)):
-                        try:
-                            cell.value = json.dumps(resolved)
-                        except Exception:
-                            cell.value = str(resolved)
+                        try: cell.value = json.dumps(resolved)
+                        except Exception: cell.value = str(resolved)
                     else:
                         cell.value = resolved
                 else:
                     cell.value = "NULL"
 
     wb.save(user_file_path)
-    log_append(text_area_placeholder, logs, "[SUCCESS] Local OCR Complete. File saved.")
+    log_append(text_area_placeholder, logs, "[SUCCESS] Processing complete with Gemini Flash. File saved.")
     return user_file_path
 
-# ---------------- UI ----------------
+# ---------------- Streamlit UI ----------------
 def main_ui():
-    st.set_page_config(page_title="Cellular Template Processor (Local)", layout="wide")
-    st.title("Advanced Cellular Template Processor (100% Free / Local)")
+    st.set_page_config(page_title="Cellular Template Processor (Gemini 2.0)", layout="wide")
+    st.title("Advanced Cellular Template Processor (Gemini 2.0 Flash Edition)")
     
-    try:
-        pytesseract.get_tesseract_version()
-    except pytesseract.TesseractNotFoundError:
-        st.error("🚨 Tesseract OCR is not installed on this system! Ensure you have rebuilt the Dev Container or installed 'tesseract-ocr' via apt-get.")
+    st.sidebar.header("Google AI Studio Settings")
+    api_key_input = st.sidebar.text_input("Google AI Studio API Key", type="password", placeholder="AIzaSy...")
+    st.sidebar.caption("Get a free key at https://aistudio.google.com/")
 
     if "logs" not in st.session_state: st.session_state["logs"] = []
     log_placeholder = st.empty()
@@ -406,12 +361,16 @@ def main_ui():
     uploaded_file = st.file_uploader("Upload .xlsx template", type=["xlsx"])
 
     if uploaded_file:
+        if not api_key_input:
+            st.warning("⚠️ Please enter your Google AI Studio API key in the sidebar to proceed.")
+            return
+
         tmp_dir = tempfile.mkdtemp()
         saved_path = os.path.join(tmp_dir, uploaded_file.name)
         with open(saved_path, "wb") as f: f.write(uploaded_file.read())
 
         if st.button("Process file now"):
-            out_path = process_file_streamlit(saved_path, tmp_dir, st.session_state["logs"], log_placeholder)
+            out_path = process_file_streamlit(saved_path, api_key_input, tmp_dir, st.session_state["logs"], log_placeholder)
             if out_path:
                 with open(out_path, "rb") as f:
                     st.download_button("Download Processed File", data=f, file_name=f"Processed_{uploaded_file.name}")
