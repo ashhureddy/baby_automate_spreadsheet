@@ -322,7 +322,10 @@ def process_file_streamlit(user_file_path: str, temp_dir: str, logs: list, text_
     for row in sheet.iter_rows():
         for cell in row:
             if isinstance(cell.value, str) and _is_red(cell.font):
-                expr = cell.value.strip().replace('"', '').replace("'", "")
+               expr = cell.value.strip()
+                # Only strip outer quotes if the whole expression was accidentally wrapped
+                if (expr.startswith('"') and expr.endswith('"')) or (expr.startswith("'") and expr.endswith("'")):
+                    expr = expr[1:-1].strip()
                 resolved = resolve_expression_with_vars(expr, allowed_vars)
                 if resolved is not None:
                     # FIX: Convert dicts/lists to strings so Excel doesn't crash
