@@ -1,7 +1,4 @@
 streamlit>=1.24
 openpyxl>=3.1
 pillow>=9.0
-requests>=2.28
-opencv-python-headless>=4.7.0
-pytesseract>=0.3.10
-numpy>=1.24.0
+google-genai>=0.1.0
