@@ -97,9 +97,12 @@ def process_service_images_gemini(client: genai.Client, image_paths: list, log_p
     
     images = [Image.open(p) for p in valid_paths]
     prompt = (
-        "You are a Senior RF Engineer validating 5G/LTE drive test screenshots. "
+        "You are a hyper-specialized AI for cellular network engineering. "
         "Analyze the provided ServiceMode screenshots and extract all cellular engineering metrics. "
-        "Return ONLY a JSON object matching the requested schema. Use null for missing values."
+        "Return EXACTLY one JSON object matching the schema. "
+        "STRICTLY return ONLY the JSON object. Do not add any conversational text, explanations, or markdown blocks. "
+        "Start your response with '{' and end with '}'.\n\n"
+        f"SCHEMA:\n{json.dumps(SERVICE_SCHEMA, indent=2)}"
     )
     
     try:
@@ -121,11 +124,16 @@ def analyze_speed_test_gemini(client: genai.Client, image_path: str, log_placeho
     img = Image.open(image_path)
     
     prompt = (
+        "You are a hyper-specialized AI for cellular network engineering. "
         "Extract SPEED TEST metrics (download_mbps, upload_mbps, ping_ms, jitter_ms) from this Ookla Speedtest screenshot.\n"
         "RULES:\n"
         "1. Download speed is under the 'Download' heading, Upload speed is under 'Upload'. Do NOT confuse them.\n"
         "2. Do NOT report 2160, 1080, 720, or 1440 video resolutions as speed.\n"
-        "3. Ignore commas in numbers (e.g. 1,071 = 1071)."
+        "3. Ignore commas in numbers (e.g. 1,071 = 1071).\n\n"
+        "Return EXACTLY one JSON object matching the schema. "
+        "STRICTLY return ONLY the JSON object. Do not add any conversational text, explanations, or markdown blocks. "
+        "Start your response with '{' and end with '}'.\n\n"
+        f"SCHEMA:\n{json.dumps(SPEEDTEST_SCHEMA, indent=2)}"
     )
     
     try:
@@ -153,7 +161,14 @@ def analyze_video_test_gemini(client: genai.Client, image_path: str, log_placeho
     if not os.path.exists(image_path): return None
     img = Image.open(image_path)
     
-    prompt = "Extract Video Test metrics (max_resolution like '2160p', load_time_ms, buffering_percentage) from this screenshot."
+    prompt = (
+        "You are a hyper-specialized AI for cellular network engineering. "
+        "Extract Video Test metrics (max_resolution like '2160p', load_time_ms, buffering_percentage) from this screenshot.\n\n"
+        "Return EXACTLY one JSON object matching the schema. "
+        "STRICTLY return ONLY the JSON object. Do not add any conversational text, explanations, or markdown blocks. "
+        "Start your response with '{' and end with '}'.\n\n"
+        f"SCHEMA:\n{json.dumps(VIDEOTEST_SCHEMA, indent=2)}"
+    )
     
     try:
         response = client.models.generate_content(
@@ -175,10 +190,15 @@ def analyze_voice_test_gemini(client: genai.Client, image_path: str, log_placeho
     img = Image.open(image_path)
     
     prompt = (
+        "You are a hyper-specialized AI for cellular network engineering. "
         "Extract Voice Call metrics from this dialer screenshot.\n"
         "1. 'time': Read the phone clock displayed in the status bar/top header (e.g. '12:48' or '01:39').\n"
         "2. 'call_duration_seconds': Convert the active call timer (e.g. '01:05') to total seconds (65). If there is no timer, return null.\n"
-        "3. 'call_status': Return 'active' if a timer is running, otherwise 'dialing'."
+        "3. 'call_status': Return 'active' if a timer is running, otherwise 'dialing'.\n\n"
+        "Return EXACTLY one JSON object matching the schema. "
+        "STRICTLY return ONLY the JSON object. Do not add any conversational text, explanations, or markdown blocks. "
+        "Start your response with '{' and end with '}'.\n\n"
+        f"SCHEMA:\n{json.dumps(VOICETEST_SCHEMA, indent=2)}"
     )
     
     try:
