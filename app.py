@@ -325,7 +325,14 @@ def process_file_streamlit(user_file_path: str, temp_dir: str, logs: list, text_
                 expr = cell.value.strip().replace('"', '').replace("'", "")
                 resolved = resolve_expression_with_vars(expr, allowed_vars)
                 if resolved is not None:
-                    cell.value = resolved
+                    # FIX: Convert dicts/lists to strings so Excel doesn't crash
+                    if isinstance(resolved, (dict, list, tuple)):
+                        try:
+                            cell.value = json.dumps(resolved)
+                        except Exception:
+                            cell.value = str(resolved)
+                    else:
+                        cell.value = resolved
                 else:
                     cell.value = "NULL"
 
