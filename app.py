@@ -90,6 +90,43 @@ def get_sector_from_col(col_index: int) -> str:
     if 12 <= col_index < 18: return "voicetest"
     return "unknown"
 
+# ---------------- Smart API Retry Engine ----------------
+def call_gemini_with_retry(client: genai.Client, prompt: str, images: list, schema: dict, log_placeholder, logs: list, model: str = 'gemini-3.6-flash', retries: int = 4) -> Optional[dict]:
+    """Wraps the Gemini API call with exponential backoff and rate-limit parsing."""
+    for attempt in range(retries):
+        try:
+            # Baseline delay to ease pressure on the 5 RPM limit
+            time.sleep(3) 
+            response = client.models.generate_content(
+                model=model,
+                contents=[prompt] + images,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=schema
+                )
+            )
+            return json.loads(response.text)
+            
+        except Exception as e:
+            error_str = str(e)
+            
+            # Catch Rate Limits (429) or Server Overload (503)
+            if "429" in error_str or "503" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+                wait_time = 45 # Default safe wait for 5 RPM limit
+                
+                # Attempt to parse Google's explicit requested wait time
+                m = re.search(r'retry in ([\d\.]+)s', error_str, re.IGNORECASE)
+                if m:
+                    wait_time = float(m.group(1)) + 2.0 # Add 2s buffer
+                
+                if attempt < retries - 1:
+                    log_append(log_placeholder, logs, f"[WARNING] API Rate Limit hit. Pausing for {int(wait_time)} seconds before resuming...")
+                    time.sleep(wait_time)
+                    continue
+            
+            log_append(log_placeholder, logs, f"[ERROR] API Call Failed: {error_str}")
+            return None
+
 # ---------------- Gemini API Analysis Modules ----------------
 def process_service_images_gemini(client: genai.Client, image_paths: list, log_placeholder, logs: list) -> dict:
     valid_paths = [p for p in image_paths if p and os.path.exists(p)]
@@ -105,19 +142,8 @@ def process_service_images_gemini(client: genai.Client, image_paths: list, log_p
         f"SCHEMA:\n{json.dumps(SERVICE_SCHEMA, indent=2)}"
     )
     
-    try:
-        response = client.models.generate_content(
-            model='gemini-3.6-flash',
-            contents=[prompt] + images,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=SERVICE_SCHEMA
-            )
-        )
-        return json.loads(response.text)
-    except Exception as e:
-        log_append(log_placeholder, logs, f"[ERROR] ServiceMode extraction failed: {e}")
-        return {}
+    res = call_gemini_with_retry(client, prompt, images, SERVICE_SCHEMA, log_placeholder, logs)
+    return res if res else {}
 
 def analyze_speed_test_gemini(client: genai.Client, image_path: str, log_placeholder, logs: list) -> Optional[dict]:
     if not os.path.exists(image_path): return None
@@ -136,26 +162,15 @@ def analyze_speed_test_gemini(client: genai.Client, image_path: str, log_placeho
         f"SCHEMA:\n{json.dumps(SPEEDTEST_SCHEMA, indent=2)}"
     )
     
-    try:
-        response = client.models.generate_content(
-            model='gemini-3.6-flash',
-            contents=[prompt, img],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=SPEEDTEST_SCHEMA
-            )
-        )
-        data = json.loads(response.text)
-        
-        # Sanity check: Reject video resolutions misidentified as download speed
-        dl = data.get("download_mbps")
-        if dl in [2160, 1080, 720, 1440, 2160.0, 1080.0]: return None
-        if dl is None and data.get("upload_mbps") is None: return None
-        
-        return {"image_type": "speed_test", "data": data}
-    except Exception as e:
-        log_append(log_placeholder, logs, f"[ERROR] Speedtest failed: {e}")
-        return None
+    data = call_gemini_with_retry(client, prompt, [img], SPEEDTEST_SCHEMA, log_placeholder, logs)
+    if not data: return None
+    
+    # Sanity check: Reject video resolutions misidentified as download speed
+    dl = data.get("download_mbps")
+    if dl in [2160, 1080, 720, 1440, 2160.0, 1080.0]: return None
+    if dl is None and data.get("upload_mbps") is None: return None
+    
+    return {"image_type": "speed_test", "data": data}
 
 def analyze_video_test_gemini(client: genai.Client, image_path: str, log_placeholder, logs: list) -> Optional[dict]:
     if not os.path.exists(image_path): return None
@@ -170,20 +185,11 @@ def analyze_video_test_gemini(client: genai.Client, image_path: str, log_placeho
         f"SCHEMA:\n{json.dumps(VIDEOTEST_SCHEMA, indent=2)}"
     )
     
-    try:
-        response = client.models.generate_content(
-            model='gemini-3.6-flash',
-            contents=[prompt, img],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=VIDEOTEST_SCHEMA
-            )
-        )
-        data = json.loads(response.text)
-        if not data.get("max_resolution") and not data.get("load_time_ms"): return None
-        return {"image_type": "video_test", "data": data}
-    except Exception as e:
-        return None
+    data = call_gemini_with_retry(client, prompt, [img], VIDEOTEST_SCHEMA, log_placeholder, logs)
+    if not data: return None
+    
+    if not data.get("max_resolution") and not data.get("load_time_ms"): return None
+    return {"image_type": "video_test", "data": data}
 
 def analyze_voice_test_gemini(client: genai.Client, image_path: str, log_placeholder, logs: list) -> Optional[dict]:
     if not os.path.exists(image_path): return None
@@ -201,19 +207,10 @@ def analyze_voice_test_gemini(client: genai.Client, image_path: str, log_placeho
         f"SCHEMA:\n{json.dumps(VOICETEST_SCHEMA, indent=2)}"
     )
     
-    try:
-        response = client.models.generate_content(
-            model='gemini-3.6-flash',
-            contents=[prompt, img],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=VOICETEST_SCHEMA
-            )
-        )
-        data = json.loads(response.text)
-        return {"image_type": "voice_call", "data": data}
-    except Exception as e:
-        return None
+    data = call_gemini_with_retry(client, prompt, [img], VOICETEST_SCHEMA, log_placeholder, logs)
+    if not data: return None
+    
+    return {"image_type": "voice_call", "data": data}
 
 def dispatch_image_analysis_gemini(client: genai.Client, image_path: str, log_placeholder, logs: list) -> Optional[dict]:
     try: idx = int(Path(image_path).stem.split("_")[-1])
@@ -301,7 +298,7 @@ def process_file_streamlit(user_file_path: str, api_key: str, temp_dir: str, log
     images_by_sector = {"alpha": [], "beta": [], "gamma": [], "voicetest": [], "unknown": []}
     for p in image_paths: images_by_sector[Path(p).stem.split("_")[0]].append(p)
 
-    log_append(text_area_placeholder, logs, "[LOG] Starting Gemini 3.6 Flash VLM processing...")
+    log_append(text_area_placeholder, logs, "[LOG] Starting Gemini 3.6 Flash processing with Rate Limiting...")
     
     # Process Sector Service & Test Images
     for sector in ["alpha", "beta", "gamma"]:
